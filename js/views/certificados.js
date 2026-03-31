@@ -261,23 +261,60 @@ async function saveCert() {
     return;
   }
 
-  const codGerado = 'CRT-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Date.now().toString().slice(-4);
-
-  const payload = {
-    tenant_id: getTenantId(),
-    aluno_id,
-    curso_id,
-    data_emissao,
-    data_validade,
-    codigo_verificacao: codGerado,
-    status: 'valido'
-  };
-
   const btn = document.getElementById('modal-save');
   btn.disabled = true;
-  btn.textContent = 'Gerando...';
+  btn.textContent = 'Aguarde...';
 
   try {
+    // 1. Verify if matricula is completed
+    const { data: matriculas, error: errMat } = await supabase
+      .from('matriculas')
+      .select('status, id')
+      .eq('tenant_id', getTenantId())
+      .eq('aluno_id', aluno_id)
+      .eq('curso_id', curso_id)
+      .eq('status', 'concluido');
+    
+    if (errMat) throw errMat;
+    if (!matriculas || matriculas.length === 0) {
+      toast('Aluno não concluiu o curso selecionado.', 'warning');
+      btn.disabled = false;
+      btn.textContent = 'Salvar e Gerar Código';
+      return;
+    }
+
+    // 2. Verify if there are unpaid financial records
+    const { data: pendencias, error: errFin } = await supabase
+      .from('pagamentos')
+      .select('id')
+      .eq('tenant_id', getTenantId())
+      .eq('aluno_id', aluno_id)
+      .eq('curso_id', curso_id)
+      .in('status', ['pendente', 'atraso']);
+    
+    if (errFin) throw errFin;
+    if (pendencias && pendencias.length > 0) {
+      toast('Aluno possui pendências financeiras para este curso.', 'warning');
+      btn.disabled = false;
+      btn.textContent = 'Salvar e Gerar Código';
+      return;
+    }
+
+    btn.textContent = 'Gerando...';
+
+    const codGerado = 'CRT-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Date.now().toString().slice(-4);
+
+    const payload = {
+      tenant_id: getTenantId(),
+      aluno_id,
+      curso_id,
+      matricula_id: matriculas[0].id,
+      data_emissao,
+      data_validade,
+      codigo_verificacao: codGerado,
+      status: 'valido'
+    };
+
     const { error } = await supabase.from('certificados').insert(payload);
     if (error) throw error;
     closeModal();

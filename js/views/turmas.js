@@ -427,7 +427,7 @@ async function verAlunos(turma) {
       .neq('status', 'cancelado');
     if (error) throw error;
     if (!data || !data.length) {
-      document.querySelector('.modal-body').innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-tertiary)">Nenhum aluno ativo nesta turma.</div>';
+      document.getElementById('modal-body').innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-tertiary)">Nenhum aluno ativo nesta turma.</div>';
       return;
     }
     const html = data.map(m => `
@@ -436,9 +436,9 @@ async function verAlunos(turma) {
         <div><span class="badge badge-gray">${esc(m.status)}</span></div>
       </div>
     `).join('');
-    document.querySelector('.modal-body').innerHTML = `<div style="max-height:400px;overflow-y:auto">${html}</div>`;
+    document.getElementById('modal-body').innerHTML = `<div style="max-height:400px;overflow-y:auto">${html}</div>`;
   } catch (e) {
-    document.querySelector('.modal-body').innerHTML = '<div style="padding:20px;color:var(--red)">Erro ao carregar alunos.</div>';
+    document.getElementById('modal-body').innerHTML = '<div style="padding:20px;color:var(--red)">Erro ao carregar alunos.</div>';
   }
 }
 

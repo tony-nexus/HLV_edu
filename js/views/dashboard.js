@@ -188,10 +188,10 @@ async function renderAlerts() {
   try {
     const { data, error } = await supabase
       .from('certificados')
-      .select('aluno:aluno_id(nome), curso:curso_id(nome), validade, status')
+      .select('aluno:aluno_id(nome), curso:curso_id(nome), data_validade, status')
       .eq('tenant_id', getTenantId())
       .in('status', ['a_vencer', 'vencido'])
-      .order('validade', { ascending: true })
+      .order('data_validade', { ascending: true })
       .limit(6);
       
     if (error) throw error;
@@ -199,7 +199,7 @@ async function renderAlerts() {
     if (data) {
       alerts = data.map(c => ({
         label: `${c.aluno?.nome || '—'} — ${c.curso?.nome || '—'}`,
-        sub: `Validade: ${fmtDate(c.validade)}`,
+        sub: `Validade: ${fmtDate(c.data_validade)}`,
         color: c.status === 'vencido' ? 'var(--red)' : 'var(--amber)',
         bg: c.status === 'vencido' ? 'var(--red-soft)' : 'var(--amber-soft)'
       }));
@@ -418,13 +418,13 @@ async function renderCerts() {
   try {
     const { data, error } = await supabase
       .from('certificados')
-      .select('aluno:aluno_id(nome), curso:curso_id(nome), validade, status')
+      .select('aluno:aluno_id(nome), curso:curso_id(nome), data_validade, status')
       .eq('tenant_id', getTenantId())
-      .order('validade', { ascending: true })
+      .order('data_validade', { ascending: true })
       .limit(4);
       
     if (error) throw error;
-    if (data) certs = data.map(c => ({ aluno: c.aluno?.nome ?? '—', curso: c.curso?.nome ?? '—', validade: c.validade, status: c.status }));
+    if (data) certs = data.map(c => ({ aluno: c.aluno?.nome ?? '—', curso: c.curso?.nome ?? '—', validade: c.data_validade, status: c.status }));
   } catch (err) {
     console.error('[Certs] Erro:', err);
     toast('Erro ao carregar certificados', 'error');

@@ -292,6 +292,43 @@ function esc(str) {
   );
 }
 
+// ─── Masks ────────────────────────────────────────────────────────────────────
+function maskCPF(v) { return v.replace(/\D/g,'').replace(/(\d{3})(\d)/,'$1.$2').replace(/(\d{3})(\d)/,'$1.$2').replace(/(\d{3})(\d{1,2})$/,'$1-$2').slice(0,14); }
+function maskCNPJ(v) { return v.replace(/\D/g,'').replace(/^(\d{2})(\d)/,'$1.$2').replace(/^(\d{2})\.(\d{3})(\d)/,'$1.$2.$3').replace(/\.(\d{3})(\d)/,'.$1/$2').replace(/(\d{4})(\d)/,'$1-$2').slice(0,18); }
+function maskTel(v) { 
+  let r = v.replace(/\D/g, '');
+  if (r.length <= 10) return r.replace(/^(\d{2})(\d{4})(\d{0,4}).*/, '($1) $2-$3').trim();
+  return r.replace(/^(\d{2})(\d{5})(\d{0,4}).*/, '($1) $2-$3').trim();
+}
+function maskCEP(v) { return v.replace(/\D/g,'').replace(/^(\d{5})(\d)/,'$1-$2').slice(0,9); }
+
+function applyMasks(prefix) {
+  const cpfEl = document.getElementById(prefix + 'cpf');
+  const telEl = document.getElementById(prefix + 'tel');
+  const cepEl = document.getElementById(prefix + 'cep');
+  const tipoEl = document.getElementById(prefix + 'tipo');
+
+  const updateCpfMask = (el) => {
+    if(!el) return;
+    const isPessoaFisica = !tipoEl || tipoEl.value === 'pessoa_fisica';
+    el.value = isPessoaFisica ? maskCPF(el.value) : maskCNPJ(el.value);
+  };
+
+  if (cpfEl) {
+    cpfEl.addEventListener('input', (e) => updateCpfMask(e.target));
+    if(tipoEl) tipoEl.addEventListener('change', () => { 
+      // Update label
+      const label = cpfEl.previousElementSibling;
+      if (label && label.tagName === 'LABEL') {
+        label.textContent = tipoEl.value === 'pessoa_fisica' ? 'CPF *' : 'CNPJ *';
+      }
+      cpfEl.value = ''; // Limpa ao trocar pra não ter formatação misturada
+    });
+  }
+  if (telEl) telEl.addEventListener('input', (e) => e.target.value = maskTel(e.target.value));
+  if (cepEl) cepEl.addEventListener('input', (e) => e.target.value = maskCEP(e.target.value));
+}
+
 async function buscarCEP(cep, prefix) {
   const c = cep.replace(/\D/g, '');
   if (c.length !== 8) return;
@@ -399,6 +436,7 @@ function modalNovoAluno() {
     </div>
   `);
 
+  applyMasks('f-');
   document.getElementById('f-cep')?.addEventListener('blur', (e) => buscarCEP(e.target.value, 'f-'));
   document.getElementById('modal-cancel')?.addEventListener('click', () => closeModal());
   document.getElementById('modal-save')?.addEventListener('click', () => salvarNovoAluno());
@@ -426,7 +464,22 @@ async function salvarNovoAluno() {
 
   // Validação mínima
   if (!nome) { toast('O campo Nome é obrigatório.', 'warning'); return; }
-  if (!cpf)  { toast('O campo CPF é obrigatório.', 'warning'); return; }
+  if (!cpf)  { toast('O campo CPF/CNPJ é obrigatório.', 'warning'); return; }
+  
+  const rawCpf = cpf.replace(/\D/g, '');
+  if (tipo === 'pessoa_fisica' && rawCpf.length !== 11) { toast('CPF deve conter 11 dígitos.', 'warning'); return; }
+  if (tipo === 'empresa' && rawCpf.length !== 14) { toast('CNPJ deve conter 14 dígitos.', 'warning'); return; }
+
+  const rawTel = (telefone || '').replace(/\D/g, '');
+  if (rawTel && rawTel.length < 10) { toast('Telefone inválido. Deve ter pelo menos 10 dígitos com DDD.', 'warning'); return; }
+
+  const rawCep = (cep || '').replace(/\D/g, '');
+  if (rawCep && rawCep.length !== 8) { toast('CEP inválido.', 'warning'); return; }
+
+  if (nascimento) {
+    const age = (new Date() - new Date(nascimento)) / (1000 * 60 * 60 * 24 * 365.25);
+    if (age < 18) { toast('O aluno deve ser maior de 18 anos.', 'warning'); return; }
+  }
 
   const saveBtn = document.getElementById('modal-save');
   saveBtn.disabled = true;
@@ -544,6 +597,14 @@ function modalEditarAluno(aluno) {
     </div>
   `);
 
+  applyMasks('e-');
+  // Ajusta a label inicial do CPF/CNPJ
+  const tipoEl = document.getElementById('e-tipo');
+  const cpfLabel = document.getElementById('e-cpf')?.previousElementSibling;
+  if(tipoEl && cpfLabel && cpfLabel.tagName === 'LABEL') {
+    cpfLabel.textContent = tipoEl.value === 'pessoa_fisica' ? 'CPF' : 'CNPJ';
+  }
+
   document.getElementById('e-cep')?.addEventListener('blur', (e) => buscarCEP(e.target.value, 'e-'));
   document.getElementById('modal-cancel')?.addEventListener('click', () => closeModal());
   document.getElementById('modal-update')?.addEventListener('click', () => atualizarAluno(aluno.id));
@@ -565,6 +626,12 @@ async function atualizarAluno(id) {
   const uf          = document.getElementById('e-uf')?.value.trim() || null;
 
   if (!nome) { toast('O campo Nome é obrigatório.', 'warning'); return; }
+  
+  const rawTel = (telefone || '').replace(/\D/g, '');
+  if (rawTel && rawTel.length < 10) { toast('Telefone inválido. Deve ter pelo menos 10 dígitos com DDD.', 'warning'); return; }
+
+  const rawCep = (cep || '').replace(/\D/g, '');
+  if (rawCep && rawCep.length !== 8) { toast('CEP inválido.', 'warning'); return; }
 
   const updateBtn = document.getElementById('modal-update');
   updateBtn.disabled = true;
