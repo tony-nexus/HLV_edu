@@ -8,7 +8,7 @@
  *  - Botão de busca mobile (ícone lupa no topbar)
  */
 
-import { doLogin, loginAsDemo, logout, initAuth } from './auth.js';
+import { doLogin, logout, initAuth } from './auth.js';
 import { navigate } from './router.js';
 import { initTheme, toggleTheme } from '../ui/theme.js';
 import { closeModal } from '../ui/components.js';
@@ -41,10 +41,8 @@ function registerEventListeners() {
     });
   });
 
-  // ── Demo chips ────────────────────────────────────────────────────────────
-  document.querySelectorAll('.demo-chip[data-role]').forEach(chip => {
-    chip.addEventListener('click', () => loginAsDemo(chip.dataset.role));
-  });
+  // ── Demo chips (Removido) ──────────────────────────────────────────────────
+
 
   // ── Logout ────────────────────────────────────────────────────────────────
   document.getElementById('user-chip-logout')?.addEventListener('click', () => logout());
