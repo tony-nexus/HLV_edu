@@ -1,10 +1,13 @@
 /**
  * /js/views/financeiro.js
  * CRUD real para Pagamentos (Financeiro).
+ *
+ * [FIX CRÍTICO] Ao carregar, pagamentos com status 'pendente' e vencimento
+ * anterior a hoje são automaticamente marcados como 'atraso' no banco.
  */
 
 import { supabase, getTenantId } from '../core/supabase.js';
-import { setContent, openModal, closeModal, toast, fmtMoney, fmtDate } from '../ui/components.js';
+import { setContent, openModal, closeModal, toast, fmtMoney, fmtDate, esc } from '../ui/components.js';
 
 let _pagamentos = [];
 let _matriculas = [];
@@ -29,6 +32,9 @@ export async function render() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
           <input class="search-input" id="search-fin" placeholder="Pesquisar registro...">
         </div>
+        <select class="select-input" id="filtro-curso-fin">
+          <option value="">Todos os cursos</option>
+        </select>
         <select class="select-input" id="filtro-status-fin">
           <option value="">Todos os status</option>
           <option value="pendente">Pendente</option>
@@ -49,8 +55,14 @@ export async function render() {
   document.getElementById('btn-registrar-pag')?.addEventListener('click', () => modalPagamento());
   document.getElementById('search-fin')?.addEventListener('input', applyFilter);
   document.getElementById('filtro-status-fin')?.addEventListener('change', applyFilter);
+  document.getElementById('filtro-curso-fin')?.addEventListener('change', applyFilter);
 
   await Promise.all([loadData(), loadAux()]);
+
+  // Populando os cursos com base nas matrículas para o filtro
+  const cursos = [...new Map(_matriculas.map(m => [m.curso?.id, m.curso])).values()].filter(Boolean);
+  const fCurso = document.getElementById('filtro-curso-fin');
+  if (fCurso) cursos.forEach(c => fCurso.innerHTML += `<option value="${c.id}">${esc(c.nome)}</option>`);
 }
 
 async function loadAux() {
@@ -64,6 +76,9 @@ async function loadAux() {
 }
 
 async function loadData() {
+  // [FIX CRÍTICO] Marca em atraso antes de renderizar
+  await autoMarkAtrasados();
+
   try {
     const { data, error } = await supabase
       .from('pagamentos')
@@ -84,6 +99,27 @@ async function loadData() {
   
   renderKPIs(_pagamentos);
   applyFilter();
+}
+
+/**
+ * Atualiza para 'atraso' todos os pagamentos 'pendente' com vencimento já passado.
+ * Usa uma única UPDATE com filtros no banco — eficiente independente do volume.
+ */
+async function autoMarkAtrasados() {
+  try {
+    const hoje = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const { error } = await supabase
+      .from('pagamentos')
+      .update({ status: 'atraso' })
+      .eq('tenant_id', getTenantId())
+      .eq('status', 'pendente')
+      .lt('data_vencimento', hoje);
+
+    if (error) throw error;
+  } catch (err) {
+    // Não bloqueia o carregamento — só loga
+    console.warn('[Financeiro] autoMarkAtrasados falhou:', err.message);
+  }
 }
 
 function renderKPIs(pags) {
@@ -113,9 +149,12 @@ function renderKPIs(pags) {
 function applyFilter() {
   const q  = document.getElementById('search-fin')?.value.toLowerCase() || '';
   const st = document.getElementById('filtro-status-fin')?.value || '';
+  const cr = document.getElementById('filtro-curso-fin')?.value || '';
+
   const f  = _pagamentos.filter(p =>
     (!q  || p.aluno_nome.toLowerCase().includes(q) || (p.recibo||'').toLowerCase().includes(q)) &&
-    (!st || p.status === st)
+    (!st || p.status === st) &&
+    (!cr || p.curso_id === cr)
   );
   
   const tbody = document.getElementById('fin-tbody');
@@ -128,13 +167,13 @@ function applyFilter() {
 
   tbody.innerHTML = f.map(p => `
     <tr>
-      <td style="font-weight:500;font-size:13px">${p.aluno_nome}</td>
-      <td style="font-size:12.5px;color:var(--text-secondary)">${p.curso_nome}</td>
+      <td style="font-weight:500;font-size:13px">${esc(p.aluno_nome)}</td>
+      <td style="font-size:12.5px;color:var(--text-secondary)">${esc(p.curso_nome)}</td>
       <td style="font-family:var(--font-mono);font-size:13px;color:var(--green)">${fmtMoney(p.valor||0)}</td>
       <td style="font-size:12.5px">${p.data_vencimento ? fmtDate(p.data_vencimento) : '—'}</td>
-      <td><span class="badge badge-gray">${p.tipo_pagamento || '—'}</span></td>
-      <td style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-tertiary)">${p.recibo||'—'}</td>
-      <td><span class="badge ${p.status==='recebido'?'badge-green':p.status==='atraso'?'badge-red':'badge-amber'}">${p.status==='recebido'?'Recebido':p.status==='atraso'?'Em Atraso':p.status==='pendente'?'Pendente':'Cancelado'}</span></td>
+      <td><span class="badge badge-gray">${esc(p.tipo_pagamento || '—')}</span></td>
+      <td style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-tertiary)">${esc(p.recibo||'—')}</td>
+      <td><span class="badge ${p.status==='recebido'?'badge-green':p.status==='atraso'?'badge-red':p.status==='isento'?'badge-purple':'badge-amber'}">${p.status==='recebido'?'Recebido':p.status==='atraso'?'Em Atraso':p.status==='pendente'?'Pendente':p.status==='isento'?'Isento':'Cancelado'}</span></td>
       <td>
         <div style="display:flex;gap:4px">
           ${p.status !== 'recebido' ? `<button class="action-btn action-confirmar" data-id="${p.id}">Confirmar</button>` : `<button class="action-btn" data-action="recibo">Recibo</button>`}
@@ -166,7 +205,23 @@ async function setStatus(id, newStatus) {
     if(newStatus === 'recebido') payload.data_pagamento = new Date().toISOString().split('T')[0];
     const { error } = await supabase.from('pagamentos').update(payload).eq('id', id).eq('tenant_id', getTenantId());
     if (error) throw error;
-    toast('Status atualizado para recebido!', 'success');
+    
+    // -- INÍCIO AUTOMAÇÃO PIPELINE --
+    if (newStatus === 'recebido') {
+      const p = _pagamentos.find(x => x.id == id);
+      if (p && p.matricula_id) {
+         // Move a matrícula para 'concluido'
+         await supabase.from('matriculas')
+               .update({ status: 'concluido' })
+               .eq('id', p.matricula_id)
+               .eq('tenant_id', getTenantId());
+         toast('Pagamento recebido! Aluno avançou para Concluído no Pipeline.', 'success');
+      }
+    } else {
+      toast('Status atualizado!', 'success');
+    }
+    // -- FIM AUTOMAÇÃO PIPELINE --
+
     await loadData();
   } catch(e) {
     toast('Erro!', 'error');
@@ -207,6 +262,7 @@ function modalPagamento(pag = null) {
           <option value="recebido" ${pag?.status==='recebido'?'selected':''}>Recebido</option>
           <option value="atraso" ${pag?.status==='atraso'?'selected':''}>Atrasado</option>
           <option value="cancelado" ${pag?.status==='cancelado'?'selected':''}>Cancelado</option>
+          <option value="isento" ${pag?.status==='isento'?'selected':''}>Isento</option>
         </select>
       </div>
       <div class="form-group full">
@@ -252,7 +308,7 @@ async function savePagamento(id) {
     recibo
   };
 
-  if(status === 'recebido' && !id /* se novo pag ja vier como recebido */) {
+  if (status === 'recebido') {
     payload.data_pagamento = new Date().toISOString().split('T')[0];
   }
 

@@ -28,6 +28,12 @@ export async function render() {
     <div class="page-header">
       <div><h1>Turmas</h1><p>Agendamento e controle de turmas</p></div>
       <div class="page-header-actions">
+        <button class="btn btn-secondary" id="btn-exportar-csv">
+          Exportar CSV
+        </button>
+        <button class="btn btn-secondary" id="btn-exportar-pdf">
+          Exportar PDF
+        </button>
         <button class="btn btn-primary" id="btn-nova-turma">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Nova Turma
@@ -43,6 +49,12 @@ export async function render() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
           <input class="search-input" id="search-turmas" placeholder="Código ou curso...">
         </div>
+        <select class="select-input" id="filtro-curso-turma">
+          <option value="">Todos os cursos</option>
+        </select>
+        <select class="select-input" id="filtro-inst-turma">
+          <option value="">Todos os instrutores</option>
+        </select>
         <select class="select-input" id="filtro-status-turma">
           <option value="">Todos os status</option>
           <option value="agendada">Agendada</option>
@@ -68,10 +80,20 @@ export async function render() {
   `);
 
   document.getElementById('btn-nova-turma')?.addEventListener('click', () => modalTurma());
+  document.getElementById('btn-exportar-csv')?.addEventListener('click', exportarCSV);
+  document.getElementById('btn-exportar-pdf')?.addEventListener('click', exportarPDF);
   document.getElementById('search-turmas')?.addEventListener('input', applyFilter);
   document.getElementById('filtro-status-turma')?.addEventListener('change', applyFilter);
+  document.getElementById('filtro-curso-turma')?.addEventListener('change', applyFilter);
+  document.getElementById('filtro-inst-turma')?.addEventListener('change', applyFilter);
 
   await Promise.all([loadTurmas(), loadCursos(), loadInstrutores()]);
+
+  const fCurso = document.getElementById('filtro-curso-turma');
+  if (fCurso) _cursos.forEach(c => fCurso.innerHTML += `<option value="${c.id}">${esc(c.nome)}</option>`);
+  
+  const fInst = document.getElementById('filtro-inst-turma');
+  if (fInst) _instrutores.forEach(i => fInst.innerHTML += `<option value="${i.id}">${esc(i.nome)}</option>`);
 }
 
 // ─── Fetches ──────────────────────────────────────────────────────────────────
@@ -137,9 +159,14 @@ function renderKPIs(turmas) {
 function applyFilter() {
   const q  = (document.getElementById('search-turmas')?.value || '').toLowerCase();
   const st = document.getElementById('filtro-status-turma')?.value || '';
+  const cr = document.getElementById('filtro-curso-turma')?.value || '';
+  const is = document.getElementById('filtro-inst-turma')?.value || '';
+
   const f  = _turmas.filter(t =>
     (!q  || t.codigo?.toLowerCase().includes(q) || t.curso_nome.toLowerCase().includes(q)) &&
-    (!st || t.status === st)
+    (!st || t.status === st) &&
+    (!cr || t.curso_id === cr) &&
+    (!is || t.instrutor_id === is)
   );
   const tbody = document.getElementById('turmas-tbody');
   if (!tbody) return;
@@ -168,10 +195,20 @@ function applyFilter() {
       </td>
       <td><span class="badge ${BADGE[t.status] ?? 'badge-gray'}">${LABEL[t.status] ?? t.status}</span></td>
       <td>
-        <button class="action-btn action-editar" data-id="${t.id}">Editar</button>
+        <div style="display:flex;gap:4px">
+          <button class="action-btn action-alunos" data-id="${t.id}">Alunos</button>
+          <button class="action-btn action-editar" data-id="${t.id}">Editar</button>
+        </div>
       </td>
     </tr>`;
   }).join('');
+
+  document.querySelectorAll('.action-alunos').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = _turmas.find(x => x.id === btn.dataset.id);
+      if (t) verAlunos(t);
+    });
+  });
 
   document.querySelectorAll('.action-editar').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -349,23 +386,117 @@ async function saveTurma(id) {
   btn.textContent = 'Salvando...';
 
   try {
-    let error;
+    let error, data;
     if (id) {
       ({ error } = await supabase.from('turmas').update(payload).eq('id', id).eq('tenant_id', getTenantId()));
     } else {
       payload.ocupadas = 0;
-      ({ error } = await supabase.from('turmas').insert(payload));
+      let res = await supabase.from('turmas').insert(payload);
+      error = res.error;
+      
+      // Feature: Retry Code Generation if collision
+      if (error && error.code === '23505') {
+        const novoCodigo = await gerarCodigoTurma(curso_id, inicio);
+        payload.codigo = novoCodigo;
+        res = await supabase.from('turmas').insert(payload);
+        error = res.error;
+      }
     }
+    
     if (error) {
-      if (error.code === '23505') throw new Error('Já existe uma turma com este código.');
+      if (error.code === '23505') throw new Error('Já existe uma turma com este código. Tente novamente.');
       throw error;
     }
     closeModal();
-    toast(id ? 'Turma atualizada com sucesso!' : `Turma ${codigo} criada!`, 'success');
+    toast(id ? 'Turma atualizada com sucesso!' : `Turma ${payload.codigo} criada!`, 'success');
     await loadTurmas();
   } catch (err) {
     toast(`Erro: ${err.message}`, 'error');
     btn.disabled = false;
     btn.textContent = id ? 'Salvar Alterações' : 'Criar Turma';
+  }
+}
+
+// ─── Visualização de Alunos ───────────────────────────────────────────────────
+async function verAlunos(turma) {
+  openModal(`Alunos na Turma: ${turma.codigo}`, `<div style="text-align:center;padding:40px;color:var(--text-tertiary)">Carregando...</div>`);
+  try {
+    const { data, error } = await supabase.from('matriculas')
+      .select('id, aluno:aluno_id(nome, cpf), status')
+      .eq('turma_id', turma.id).eq('tenant_id', getTenantId())
+      .neq('status', 'cancelado');
+    if (error) throw error;
+    if (!data || !data.length) {
+      document.querySelector('.modal-body').innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-tertiary)">Nenhum aluno ativo nesta turma.</div>';
+      return;
+    }
+    const html = data.map(m => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border-bottom:1px solid var(--border-color)">
+        <div><strong>${esc(m.aluno?.nome)}</strong><br><small style="color:var(--text-secondary)">CPF: ${esc(m.aluno?.cpf || 'N/A')}</small></div>
+        <div><span class="badge badge-gray">${esc(m.status)}</span></div>
+      </div>
+    `).join('');
+    document.querySelector('.modal-body').innerHTML = `<div style="max-height:400px;overflow-y:auto">${html}</div>`;
+  } catch (e) {
+    document.querySelector('.modal-body').innerHTML = '<div style="padding:20px;color:var(--red)">Erro ao carregar alunos.</div>';
+  }
+}
+
+// ─── Exportação ───────────────────────────────────────────────────────────────
+function exportarCSV() {
+  const headers = ['Código','Curso','Instrutor','Início','Fim','Vagas','Ocupadas','Status'];
+  const rows = _turmas.map(t => [
+    t.codigo, t.curso_nome, t.instrutor_nome, t.data_inicio, t.data_fim, t.vagas, t.ocupadas, t.status
+  ].map(v => `"${v||''}"`).join(','));
+  const csv = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'turmas.csv'; a.click();
+  URL.revokeObjectURL(url);
+  toast('CSV exportado com sucesso!', 'success');
+}
+
+async function exportarPDF() {
+  try {
+    toast('Gerando PDF...', 'info');
+    if (typeof window.jspdf === 'undefined') {
+      await new Promise((resolve) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+        script.onload = resolve;
+        document.head.appendChild(script);
+      });
+      await new Promise((resolve) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js';
+        script.onload = resolve;
+        document.head.appendChild(script);
+      });
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.text('Relatório de Turmas', 14, 15);
+    const body = _turmas.map(t => [
+      t.codigo,
+      t.curso_nome,
+      t.instrutor_nome,
+      `${t.data_inicio ? fmtDate(t.data_inicio) : ''} a ${t.data_fim ? fmtDate(t.data_fim) : '-'}`,
+      `${t.ocupadas || 0}/${t.vagas}`,
+      LABEL[t.status] || t.status
+    ]);
+    doc.autoTable({
+      head: [['Código', 'Curso', 'Instrutor', 'Período', 'Vagas', 'Status']],
+      body: body,
+      startY: 20,
+      theme: 'grid',
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [15, 23, 42] }
+    });
+    doc.save('turmas.pdf');
+    toast('PDF exportado com sucesso!', 'success');
+  } catch (err) {
+    console.error(err);
+    toast('Erro ao gerar PDF', 'error');
   }
 }

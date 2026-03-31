@@ -6,15 +6,12 @@
  *  - currentUser exposto em globalThis.__eduos_auth para getTenantId() sem import circular
  *  - initials gerado com segurança (guard contra nomes undefined)
  *  - Mensagens de erro em PT-BR mais descritivas
+ *  - [FIX CRÍTICO] showNavForPerfil() oculta itens do sidebar sem permissão
  */
 
 import { navigate } from './router.js';
 
-const DEMO_USERS = {
-  admin:      { name:'Ana Rodrigues',  role:'Administrador', initials:'AR', perfil:'admin',      tenant_id:'00000000-0000-0000-0000-000000000000' },
-  secretaria: { name:'Carlos Lima',    role:'Secretaria',    initials:'CL', perfil:'secretaria', tenant_id:'00000000-0000-0000-0000-000000000000' },
-  instrutor:  { name:'Prof. Beatriz',  role:'Instrutor',     initials:'PB', perfil:'instrutor',  tenant_id:'00000000-0000-0000-0000-000000000000' },
-};
+// Removido DEMO_USERS
 
 export let currentUser = null;
 
@@ -27,11 +24,6 @@ function _syncGlobal() {
 export async function doLogin(email, password) {
   const errorEl = document.getElementById('login-error');
   errorEl.style.display = 'none';
-
-  if (email.endsWith('@eduos.demo')) {
-    loginAsDemo('admin');
-    return;
-  }
 
   setLoginLoading(true);
   try {
@@ -77,14 +69,6 @@ export async function doLogin(email, password) {
   }
 }
 
-// ─── Login demo ───────────────────────────────────────────────────────────────
-export function loginAsDemo(role) {
-  currentUser = { ...DEMO_USERS[role] };
-  _syncGlobal();
-  showApp();
-  navigate('dashboard');
-}
-
 // ─── Logout ───────────────────────────────────────────────────────────────────
 export async function logout() {
   currentUser = null;
@@ -93,7 +77,7 @@ export async function logout() {
     const { getClient } = await import('./supabase.js');
     const client = await getClient();
     await client.auth.signOut();
-  } catch (_) { /* modo demo */ }
+  } catch (err) { console.error("Erro no logout", err); }
   hideApp();
 }
 
@@ -106,20 +90,31 @@ export async function initAuth() {
     const { data: { session } } = await client.auth.getSession();
     if (!session?.user) return false;
 
-    const { data: perfil } = await client
+    const { data: perfil, error: perfilError } = await client
       .from('perfis')
       .select('nome, role, tenant_id')
       .eq('user_id', session.user.id)
       .single();
 
+    if (perfilError || !perfil) {
+      // Sem perfil = conta criada sem configuração. Faz logout preventivo.
+      await client.auth.signOut();
+      const errEl = document.getElementById('login-error');
+      if (errEl) {
+        errEl.textContent = 'Conta sem perfil configurado. Contate o administrador.';
+        errEl.style.display = 'block';
+      }
+      return false;
+    }
+
     currentUser = {
       id:        session.user.id,
       email:     session.user.email,
-      name:      perfil?.nome  ?? session.user.email.split('@')[0],
-      role:      perfil?.role  ?? 'admin',
-      initials:  _makeInitials(perfil?.nome ?? session.user.email),
-      perfil:    perfil?.role  ?? 'admin',
-      tenant_id: perfil?.tenant_id ?? null,
+      name:      perfil.nome,
+      role:      perfil.role,
+      initials:  _makeInitials(perfil.nome),
+      perfil:    perfil.role,
+      tenant_id: perfil.tenant_id,
     };
     _syncGlobal();
 
@@ -149,7 +144,49 @@ function showApp() {
     document.getElementById('user-avatar-sidebar').textContent = currentUser.initials;
     document.getElementById('user-name-sidebar').textContent   = currentUser.name;
     document.getElementById('user-role-sidebar').textContent   = currentUser.role;
+
+    // [FIX CRÍTICO] Filtra nav items pelo perfil
+    showNavForPerfil(currentUser.perfil ?? currentUser.role ?? '');
   }
+}
+
+/**
+ * Oculta itens do sidebar que o perfil não pode acessar.
+ * Usa a mesma tabela ROUTE_PERMISSIONS do router.js (replicada aqui para evitar import cíclico).
+ * Admin e super_admin veem tudo.
+ */
+function showNavForPerfil(perfil) {
+  const p = (perfil ?? '').toLowerCase();
+  const isAdmin = p === 'admin' || p === 'super_admin' || p === 'administrador';
+
+  // Permissões replicadas do router.js (sem import cíclico)
+  const PERMS = {
+    dashboard:     ['secretaria', 'coordenador', 'financeiro', 'comercial', 'instrutor'],
+    alunos:        ['secretaria', 'coordenador', 'comercial'],
+    turmas:        ['secretaria', 'coordenador', 'instrutor'],
+    cursos:        ['secretaria', 'coordenador'],
+    instrutores:   ['secretaria', 'coordenador'],
+    matriculas:    ['secretaria', 'comercial'],
+    pipeline:      ['secretaria', 'comercial', 'coordenador'],
+    certificados:  ['secretaria', 'coordenador'],
+    empresas:      ['secretaria', 'comercial', 'financeiro'],
+    renovacoes:    ['secretaria', 'comercial', 'coordenador'],
+    financeiro:    ['financeiro'],
+    relatorios:    ['financeiro', 'coordenador'],
+    rbac:          [],
+    configuracoes: [],
+  };
+
+  document.querySelectorAll('.nav-item[data-page]').forEach(item => {
+    const page = item.dataset.page;
+    if (isAdmin) {
+      item.style.display = '';
+      return;
+    }
+    const allowed = PERMS[page];
+    const podeAcessar = allowed === undefined || allowed.includes(p);
+    item.style.display = podeAcessar ? '' : 'none';
+  });
 }
 
 function hideApp() {
@@ -157,10 +194,8 @@ function hideApp() {
   document.getElementById('login-screen').style.display = '';
   const emailEl = document.getElementById('login-email');
   const passEl  = document.getElementById('login-pass');
-  if (emailEl && !emailEl.value.endsWith('@eduos.demo')) {
-    emailEl.value = '';
-    if (passEl) passEl.value = '';
-  }
+  if (emailEl) emailEl.value = '';
+  if (passEl) passEl.value = '';
 }
 
 function setLoginLoading(loading) {

@@ -4,7 +4,7 @@
  */
 
 import { supabase, getTenantId } from '../core/supabase.js';
-import { setContent, toast } from '../ui/components.js';
+import { setContent, toast, esc, fmtDate } from '../ui/components.js';
 
 let _alerts = [];
 
@@ -46,26 +46,28 @@ export async function render() {
 
 async function loadData() {
   try {
-    // Busca até 90 dias expirados ou pra expirar + vencidos velhos
+    // Busca certificados vencidos ou a vencer em até 90 dias
     const limitDate = new Date(Date.now() + 90*24*60*60*1000).toISOString().split('T')[0];
     const { data, error } = await supabase
       .from('certificados')
-      .select('*, aluno:aluno_id(nome), curso:curso_id(nome)')
+      .select('*, aluno:aluno_id(nome, empresa:empresa_id(nome)), curso:curso_id(nome)')
       .eq('tenant_id', getTenantId())
-      .lte('validade', limitDate)
-      .order('validade');
+      .not('data_validade', 'is', null)
+      .lte('data_validade', limitDate)
+      .order('data_validade');
 
     if (error) throw error;
 
     if (data?.length) {
       _alerts = data.map(c => {
-        const dias = Math.round((new Date(c.validade) - new Date()) / (1000*60*60*24));
+        const dias = Math.round((new Date(c.data_validade) - new Date()) / (1000*60*60*24));
         const nivel = dias < 0 ? 'vencido' : dias <= 30 ? 'critico' : dias <= 60 ? 'atencao' : 'aviso';
         return { 
           id: c.id,
-          aluno: c.aluno?.nome ?? '—', 
-          empresa: 'Cadastro Genérico', // não fez join de empresa pois exige nested join de alunos(empresa)
+          aluno: c.aluno?.nome ?? '—',
+          empresa: c.aluno?.empresa?.nome ?? '—',
           curso: c.curso?.nome ?? '—', 
+          data_validade: c.data_validade,
           dias, 
           nivel 
         };
@@ -114,11 +116,11 @@ function renderTabela(alerts) {
     const diasTxt = a.dias < 0 ? `Venceu há ${Math.abs(a.dias)} dias` : `Vence em ${a.dias} dias`;
     return `<tr>
       <td>
-        <div style="font-weight:500;font-size:13px">${a.aluno}</div>
-        <div style="font-size:11.5px;color:var(--text-tertiary)">${a.empresa}</div>
+        <div style="font-weight:500;font-size:13px">${esc(a.aluno)}</div>
+        <div style="font-size:11.5px;color:var(--text-tertiary)">${esc(a.empresa)}</div>
       </td>
-      <td style="font-size:12.5px;color:var(--text-secondary)">${a.curso}</td>
-      <td style="font-size:12.5px;color:${a.dias<0?'var(--red)':'var(--text-secondary)'}">${diasTxt}</td>
+      <td style="font-size:12.5px;color:var(--text-secondary)">${esc(a.curso)}</td>
+      <td style="font-size:12.5px;color:${a.dias<0?'var(--red)':'var(--text-secondary)'}">${diasTxt} — ${fmtDate(a.data_validade)}</td>
       <td><span class="badge ${n.badge}">${n.label}</span></td>
       <td>
         <div style="display:flex;gap:4px">

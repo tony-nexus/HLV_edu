@@ -95,7 +95,7 @@ async function loadAlunos() {
     const client = await getClient();
     const { data, error } = await client
       .from('alunos')
-      .select('id, nome, cpf, email, telefone, tipo_pessoa, status, empresa:empresa_id(id, nome)')
+      .select('id, nome, cpf, email, telefone, data_nascimento, tipo_pessoa, status, cep, rua, numero, complemento, bairro, cidade, uf, empresa:empresa_id(id, nome)')
       .eq('tenant_id', getTenantId())
       .order('nome')
       .limit(200);
@@ -182,6 +182,7 @@ function renderTabela(alunos) {
       <td><span class="badge ${a.status === 'ativo' ? 'badge-green' : 'badge-gray'}">${a.status === 'ativo' ? 'Ativo' : 'Inativo'}</span></td>
       <td>
         <div style="display:flex;gap:4px">
+          <button class="action-btn" data-action="ver-ficha" data-id="${a.id}">Ver Ficha</button>
           <button class="action-btn" data-action="editar" data-id="${a.id}">Editar</button>
           <button class="action-btn danger" data-action="toggle-status" data-id="${a.id}" data-status="${a.status}">
             ${a.status === 'ativo' ? 'Inativar' : 'Ativar'}
@@ -221,6 +222,13 @@ function bindFiltros() {
 
 // ─── Ações das linhas ─────────────────────────────────────────────────────────
 function bindRowActions() {
+  document.querySelectorAll('.action-btn[data-action="ver-ficha"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const aluno = _alunosCache.find(a => a.id === btn.dataset.id);
+      if (aluno) modalVerFicha(aluno);
+    });
+  });
+
   document.querySelectorAll('.action-btn[data-action="editar"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const aluno = _alunosCache.find(a => a.id === btn.dataset.id);
@@ -249,6 +257,56 @@ async function toggleStatus(id, statusAtual) {
     await loadAlunos(); // re-fetch para atualizar a tabela
   } catch (err) {
     toast(`Erro: ${err.message}`, 'error');
+  }
+}
+
+// ─── Modal: Ver Ficha ────────────────────────────────────────────────────────
+function modalVerFicha(aluno) {
+  openModal(`Ficha do Aluno — ${aluno.nome.split(' ')[0]}`, `
+    <div style="display:flex;flex-direction:column;gap:12px;font-size:13px">
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">Nome:</strong><span>${esc(aluno.nome)}</span></div>
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">CPF:</strong><span>${esc(aluno.cpf || '—')}</span></div>
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">E-mail:</strong><span>${esc(aluno.email || '—')}</span></div>
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">Telefone:</strong><span>${esc(aluno.telefone || '—')}</span></div>
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">Nascimento:</strong><span>${aluno.data_nascimento || '—'}</span></div>
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">Situação:</strong><span><span class="badge ${aluno.status === 'ativo' ? 'badge-green' : 'badge-gray'}">${aluno.status === 'ativo' ? 'Ativo' : 'Inativo'}</span></span></div>
+      <hr style="border:0;border-top:1px solid var(--border-color);margin:10px 0"/>
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">CEP:</strong><span>${esc(aluno.cep || '—')}</span></div>
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">Endereço:</strong><span>${aluno.rua ? esc(aluno.rua)+', '+esc(aluno.numero) + (aluno.complemento ? ' - '+esc(aluno.complemento) : '') : '—'}</span></div>
+      <div style="display:flex;gap:12px"><strong style="width:120px;color:var(--text-secondary)">Bairro/Cidade:</strong><span>${aluno.bairro ? esc(aluno.bairro)+' - '+esc(aluno.cidade)+'/'+esc(aluno.uf) : '—'}</span></div>
+    </div>
+    <div class="modal-footer" style="margin-top:24px">
+      <button class="btn btn-secondary" id="modal-cancel">Fechar</button>
+    </div>
+  `);
+  document.getElementById('modal-cancel')?.addEventListener('click', () => closeModal());
+}
+
+// ─── Utils: Escapar HTML e Auto-CEP ───────────────────────────────────────────
+function esc(str) {
+  if (!str) return '';
+  return String(str).replace(/[&<>'"]/g, 
+    tag => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    }[tag] || tag)
+  );
+}
+
+async function buscarCEP(cep, prefix) {
+  const c = cep.replace(/\D/g, '');
+  if (c.length !== 8) return;
+  try {
+    const res = await fetch(`https://viacep.com.br/ws/${c}/json/`);
+    const data = await res.json();
+    if (data.erro) { toast('CEP não encontrado', 'warning'); return; }
+    document.getElementById(prefix + 'rua').value = data.logradouro || '';
+    document.getElementById(prefix + 'bairro').value = data.bairro || '';
+    document.getElementById(prefix + 'cidade').value = data.localidade || '';
+    document.getElementById(prefix + 'uf').value = data.uf || '';
+    document.getElementById(prefix + 'numero').focus();
+    toast('Endereço preenchido via ViaCEP', 'success');
+  } catch (err) {
+    toast('Erro ao buscar CEP', 'error');
   }
 }
 
@@ -294,7 +352,40 @@ function modalNovoAluno() {
           ${empresaOptions}
         </select>
       </div>
+      <div class="form-group full" style="grid-column: 1 / -1">
+        <hr style="border:0;border-top:1px solid var(--border-color);margin:10px 0"/>
+        <label style="color:var(--accent);margin-bottom:8px">Endereço (Auto-CEP)</label>
+      </div>
+      <div class="form-group">
+        <label>CEP</label>
+        <input id="f-cep" type="text" placeholder="00000-000">
+      </div>
       <div class="form-group full">
+        <label>Rua/Logradouro</label>
+        <input id="f-rua" type="text">
+      </div>
+      <div class="form-group">
+        <label>Número *</label>
+        <input id="f-numero" type="text">
+      </div>
+      <div class="form-group">
+        <label>Complemento</label>
+        <input id="f-complemento" type="text">
+      </div>
+      <div class="form-group">
+        <label>Bairro</label>
+        <input id="f-bairro" type="text">
+      </div>
+      <div class="form-group">
+        <label>Cidade</label>
+        <input id="f-cidade" type="text">
+      </div>
+      <div class="form-group">
+        <label>UF</label>
+        <input id="f-uf" type="text" maxlength="2">
+      </div>
+      <div class="form-group full">
+        <hr style="border:0;border-top:1px solid var(--border-color);margin:10px 0"/>
         <label>Observações</label>
         <textarea id="f-obs" placeholder="Informações adicionais..."></textarea>
       </div>
@@ -308,6 +399,7 @@ function modalNovoAluno() {
     </div>
   `);
 
+  document.getElementById('f-cep')?.addEventListener('blur', (e) => buscarCEP(e.target.value, 'f-'));
   document.getElementById('modal-cancel')?.addEventListener('click', () => closeModal());
   document.getElementById('modal-save')?.addEventListener('click', () => salvarNovoAluno());
 }
@@ -322,6 +414,15 @@ async function salvarNovoAluno() {
   const tipo       = document.getElementById('f-tipo')?.value;
   const empresaId  = document.getElementById('f-empresa')?.value || null;
   const obs        = document.getElementById('f-obs')?.value.trim();
+
+  // Endereço
+  const cep         = document.getElementById('f-cep')?.value.trim() || null;
+  const rua         = document.getElementById('f-rua')?.value.trim() || null;
+  const numero      = document.getElementById('f-numero')?.value.trim() || null;
+  const complemento = document.getElementById('f-complemento')?.value.trim() || null;
+  const bairro      = document.getElementById('f-bairro')?.value.trim() || null;
+  const cidade      = document.getElementById('f-cidade')?.value.trim() || null;
+  const uf          = document.getElementById('f-uf')?.value.trim() || null;
 
   // Validação mínima
   if (!nome) { toast('O campo Nome é obrigatório.', 'warning'); return; }
@@ -346,6 +447,7 @@ async function salvarNovoAluno() {
         empresa_id:      empresaId,
         observacoes:     obs || null,
         status:          'ativo',
+        cep, rua, numero, complemento, bairro, cidade, uf
       });
 
     if (error) {
@@ -403,6 +505,38 @@ function modalEditarAluno(aluno) {
           ${empresaOptions}
         </select>
       </div>
+      <div class="form-group full" style="grid-column: 1 / -1">
+        <hr style="border:0;border-top:1px solid var(--border-color);margin:10px 0"/>
+        <label style="color:var(--accent);margin-bottom:8px">Endereço (Auto-CEP)</label>
+      </div>
+      <div class="form-group">
+        <label>CEP</label>
+        <input id="e-cep" type="text" placeholder="00000-000" value="${aluno.cep || ''}">
+      </div>
+      <div class="form-group full">
+        <label>Rua/Logradouro</label>
+        <input id="e-rua" type="text" value="${esc(aluno.rua || '')}">
+      </div>
+      <div class="form-group">
+        <label>Número *</label>
+        <input id="e-numero" type="text" value="${esc(aluno.numero || '')}">
+      </div>
+      <div class="form-group">
+        <label>Complemento</label>
+        <input id="e-complemento" type="text" value="${esc(aluno.complemento || '')}">
+      </div>
+      <div class="form-group">
+        <label>Bairro</label>
+        <input id="e-bairro" type="text" value="${esc(aluno.bairro || '')}">
+      </div>
+      <div class="form-group">
+        <label>Cidade</label>
+        <input id="e-cidade" type="text" value="${esc(aluno.cidade || '')}">
+      </div>
+      <div class="form-group">
+        <label>UF</label>
+        <input id="e-uf" type="text" maxlength="2" value="${esc(aluno.uf || '')}">
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" id="modal-cancel">Cancelar</button>
@@ -410,6 +544,7 @@ function modalEditarAluno(aluno) {
     </div>
   `);
 
+  document.getElementById('e-cep')?.addEventListener('blur', (e) => buscarCEP(e.target.value, 'e-'));
   document.getElementById('modal-cancel')?.addEventListener('click', () => closeModal());
   document.getElementById('modal-update')?.addEventListener('click', () => atualizarAluno(aluno.id));
 }
@@ -421,6 +556,13 @@ async function atualizarAluno(id) {
   const telefone  = document.getElementById('e-tel')?.value.trim();
   const tipo      = document.getElementById('e-tipo')?.value;
   const empresaId = document.getElementById('e-empresa')?.value || null;
+  const cep         = document.getElementById('e-cep')?.value.trim() || null;
+  const rua         = document.getElementById('e-rua')?.value.trim() || null;
+  const numero      = document.getElementById('e-numero')?.value.trim() || null;
+  const complemento = document.getElementById('e-complemento')?.value.trim() || null;
+  const bairro      = document.getElementById('e-bairro')?.value.trim() || null;
+  const cidade      = document.getElementById('e-cidade')?.value.trim() || null;
+  const uf          = document.getElementById('e-uf')?.value.trim() || null;
 
   if (!nome) { toast('O campo Nome é obrigatório.', 'warning'); return; }
 
@@ -438,6 +580,7 @@ async function atualizarAluno(id) {
         telefone:   telefone  || null,
         tipo_pessoa: tipo,
         empresa_id: empresaId,
+        cep, rua, numero, complemento, bairro, cidade, uf
       })
       .eq('id', id)
       .eq('tenant_id', getTenantId());

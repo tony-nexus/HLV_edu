@@ -1,10 +1,16 @@
 /**
  * /js/views/certificados.js
  * CRUD real para Certificados.
+ *
+ * [FIX CRÍTICO] Status recalculado em tempo real ao carregar:
+ *   - valido     : data_validade ≥ hoje + 30 dias
+ *   - a_vencer   : data_validade entre hoje e hoje + 30 dias
+ *   - vencido    : data_validade < hoje
+ * O banco é atualizado em lote (batch) quando o status diverge.
  */
 
 import { supabase, getTenantId } from '../core/supabase.js';
-import { setContent, openModal, closeModal, toast, fmtDate } from '../ui/components.js';
+import { setContent, openModal, closeModal, toast, fmtDate, esc } from '../ui/components.js';
 
 let _certs = [];
 let _alunos = [];
@@ -58,7 +64,7 @@ export async function render() {
 async function loadAux() {
   try {
     const p1 = supabase.from('alunos').select('id, nome').eq('tenant_id', getTenantId()).order('nome');
-    const p2 = supabase.from('cursos').select('id, nome, validade').eq('tenant_id', getTenantId()).order('nome');
+    const p2 = supabase.from('cursos').select('id, nome, validade_meses').eq('tenant_id', getTenantId()).order('nome');
     
     const [r1, r2] = await Promise.all([p1, p2]);
     _alunos = r1.data || [];
@@ -86,9 +92,59 @@ async function loadCerts() {
     toast('Erro ao carregar certificados', 'error');
     _certs = [];
   }
-  
+
+  // [FIX CRÍTICO] Recalcula e sincroniza status com base na data_validade atual
+  await syncCertStatuses();
+
   renderKPIs(_certs);
   applyFilter();
+}
+
+/**
+ * Recalcula o status correto de cada certificado.
+ * Se divergir do banco, envia batch de updates.
+ * Limiar: a_vencer = < 30 dias para vencer.
+ */
+async function syncCertStatuses() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const em30dias = new Date(today);
+  em30dias.setDate(today.getDate() + 30);
+
+  const para_atualizar = [];
+
+  _certs = _certs.map(c => {
+    if (!c.data_validade) return c; // sem validade = sempre 'valido'
+
+    const validade = new Date(c.data_validade + 'T00:00:00');
+    let novoStatus;
+    if (validade < today)         novoStatus = 'vencido';
+    else if (validade <= em30dias) novoStatus = 'a_vencer';
+    else                           novoStatus = 'valido';
+
+    if (novoStatus !== c.status) {
+      para_atualizar.push({ id: c.id, status: novoStatus });
+      return { ...c, status: novoStatus };
+    }
+    return c;
+  });
+
+  if (para_atualizar.length === 0) return;
+
+  // Atualiza em paralelo (batch individual por id — Supabase não tem bulk update direto)
+  await Promise.allSettled(
+    para_atualizar.map(({ id, status }) =>
+      supabase
+        .from('certificados')
+        .update({ status })
+        .eq('id', id)
+        .eq('tenant_id', getTenantId())
+    )
+  );
+
+  if (para_atualizar.length > 0) {
+    console.info(`[Certificados] ${para_atualizar.length} status atualizado(s) automaticamente.`);
+  }
 }
 
 function renderKPIs(certs) {
@@ -124,11 +180,11 @@ function applyFilter() {
 
   tbody.innerHTML = f.map(c => `
     <tr>
-      <td style="font-weight:500">${c.aluno_nome}</td>
-      <td style="font-size:12.5px;color:var(--text-secondary)">${c.curso_nome}</td>
-      <td><span style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-tertiary)">${c.codigo_verificacao || '—'}</span></td>
-      <td style="font-size:12.5px">${c.emissao ? fmtDate(c.emissao) : '—'}</td>
-      <td style="font-size:12.5px">${c.validade ? fmtDate(c.validade) : 'Sem validade'}</td>
+      <td style="font-weight:500">${esc(c.aluno_nome)}</td>
+      <td style="font-size:12.5px;color:var(--text-secondary)">${esc(c.curso_nome)}</td>
+      <td><span style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-tertiary)">${esc(c.codigo_verificacao || '—')}</span></td>
+      <td style="font-size:12.5px">${c.data_emissao ? fmtDate(c.data_emissao) : '—'}</td>
+      <td style="font-size:12.5px">${c.data_validade ? fmtDate(c.data_validade) : 'Sem validade'}</td>
       <td><span class="badge ${c.status==='valido'?'badge-green':c.status==='a_vencer'?'badge-amber':'badge-red'}">${c.status==='valido'?'Válido':c.status==='a_vencer'?'A Vencer':'Vencido'}</span></td>
       <td>
         <div style="display:flex;gap:4px">
@@ -144,8 +200,8 @@ function applyFilter() {
 }
 
 function modalEmitir() {
-  const aluOpts = _alunos.map(a => `<option value="${a.id}">${a.nome}</option>`).join('');
-  const curOpts = _cursos.map(c => `<option value="${c.id}" data-val="${c.validade||0}">${c.nome}</option>`).join('');
+  const aluOpts = _alunos.map(a => `<option value="${a.id}">${esc(a.nome)}</option>`).join('');
+  const curOpts = _cursos.map(c => `<option value="${c.id}" data-val="${c.validade_meses||0}">${esc(c.nome)}</option>`).join('');
 
   openModal('Emitir Certificado', `
     <div class="form-grid">
@@ -158,7 +214,7 @@ function modalEmitir() {
       </div>
       <div class="form-group full">
         <label>Curso *</label>
-        <select id="f-curso" onchange="autoLoadValidade(this)">
+        <select id="f-curso">
           <option value="">— Selecionar curso —</option>
           ${curOpts}
         </select>
@@ -179,16 +235,16 @@ function modalEmitir() {
     </div>
   `);
 
-  window.autoLoadValidade = (selectEl) => {
-    const months = parseInt(selectEl.options[selectEl.selectedIndex].dataset.val) || 0;
-    if(months > 0) {
+  document.getElementById('f-curso')?.addEventListener('change', function() {
+    const months = parseInt(this.options[this.selectedIndex]?.dataset.val) || 0;
+    if (months > 0) {
       const d = new Date(document.getElementById('f-emissao').value || new Date());
       d.setMonth(d.getMonth() + months);
       document.getElementById('f-validade').value = d.toISOString().split('T')[0];
     } else {
       document.getElementById('f-validade').value = '';
     }
-  };
+  });
 
   document.getElementById('modal-cancel')?.addEventListener('click', () => closeModal());
   document.getElementById('modal-save')?.addEventListener('click', () => saveCert());
@@ -197,8 +253,8 @@ function modalEmitir() {
 async function saveCert() {
   const aluno_id = document.getElementById('f-aluno').value;
   const curso_id = document.getElementById('f-curso').value;
-  const emissao = document.getElementById('f-emissao').value;
-  const validade = document.getElementById('f-validade').value || null;
+  const data_emissao = document.getElementById('f-emissao').value;
+  const data_validade = document.getElementById('f-validade').value || null;
 
   if (!aluno_id || !curso_id) {
     toast('Aluno e Curso são obrigatórios.', 'warning');
@@ -211,8 +267,8 @@ async function saveCert() {
     tenant_id: getTenantId(),
     aluno_id,
     curso_id,
-    emissao,
-    validade,
+    data_emissao,
+    data_validade,
     codigo_verificacao: codGerado,
     status: 'valido'
   };

@@ -7,6 +7,7 @@
  *  - Filtro de turmas por curso no modal (só exibe turmas do curso selecionado)
  *  - XSS escape em interpolações HTML
  *  - Validação de aluno duplicado na mesma turma (guard client-side)
+ *  - [FIX CRÍTICO] Incremento/decremento real de turmas.ocupadas ao matricular/cancelar
  */
 
 import { supabase, getTenantId } from '../core/supabase.js';
@@ -260,7 +261,7 @@ async function saveMatricula() {
   const turma_id = document.getElementById('f-turma')?.value || null;
   const valor    = parseFloat(document.getElementById('f-valor')?.value) || null;
   const status   = document.getElementById('f-status')?.value;
-  const obs      = document.getElementById('f-obs')?.value.trim() || null;
+  let obs        = document.getElementById('f-obs')?.value.trim() || null;
 
   if (!aluno_id) { toast('Selecione um aluno.', 'warning'); return; }
   if (!curso_id) { toast('Selecione um curso.', 'warning'); return; }
@@ -278,35 +279,56 @@ async function saveMatricula() {
 
   const btn = document.getElementById('modal-save');
   btn.disabled = true;
+  btn.textContent = 'Verificando Inteligência...';
+
+  // --- INTELIGÊNCIA DE MATRÍCULAS ---
+  try {
+    const { data: auth, error: rpcErr } = await supabase.rpc('autorizar_matricula', {
+      p_aluno_id: aluno_id,
+      p_curso_id: curso_id
+    });
+    if (rpcErr) throw rpcErr;
+    if (auth && !auth.autorizado) {
+      toast(auth.motivo || 'Matrícula bloqueada pela regras de negócio.', 'warning');
+      btn.disabled = false;
+      btn.textContent = 'Salvar Matrícula';
+      return;
+    }
+    if (auth && auth.tipo_matricula && auth.tipo_matricula !== 'Nova Matrícula') {
+      obs = obs ? `${obs}\n\n[Tipo: ${auth.tipo_matricula}]` : `[Tipo: ${auth.tipo_matricula}]`;
+      toast(`Classificada como: ${auth.tipo_matricula}`, 'info');
+    }
+  } catch(e) {
+    console.warn("RPC autorizar_matricula falhou. Prosseguindo fallback.", e);
+  }
+
   btn.textContent = 'Salvando...';
 
   try {
-    const { error } = await supabase.from('matriculas').insert({
+    const { data: novaMat, error } = await supabase.from('matriculas').insert({
       tenant_id: getTenantId(),
       aluno_id, curso_id, turma_id, status,
       observacoes: obs,
-    });
+    }).select('id').single();
     if (error) {
       if (error.code === '23505') throw new Error('Matrícula duplicada para este aluno nesta turma.');
       throw error;
     }
 
+    // [FIX CRÍTICO] Incrementa vagas ocupadas na turma
+    if (turma_id) await adjustOcupadas(turma_id, +1);
+
     // Registra pagamento inicial se informado valor
-    if (valor && valor > 0) {
-      const { data: mat } = await supabase
-        .from('matriculas').select('id').eq('aluno_id', aluno_id).eq('curso_id', curso_id)
-        .order('created_at', { ascending: false }).limit(1).single();
-      if (mat) {
-        await supabase.from('pagamentos').insert({
-          tenant_id: getTenantId(),
-          matricula_id: mat.id,
-          aluno_id,
-          curso_id,
-          valor,
-          data_vencimento: new Date().toISOString().split('T')[0],
-          status: 'pendente',
-        });
-      }
+    if (valor && valor > 0 && novaMat?.id) {
+      await supabase.from('pagamentos').insert({
+        tenant_id: getTenantId(),
+        matricula_id: novaMat.id,
+        aluno_id,
+        curso_id,
+        valor,
+        data_vencimento: new Date().toISOString().split('T')[0],
+        status: 'pendente',
+      });
     }
 
     closeModal();
@@ -316,6 +338,32 @@ async function saveMatricula() {
     toast(`Erro: ${err.message}`, 'error');
     btn.disabled = false;
     btn.textContent = 'Salvar Matrícula';
+  }
+}
+
+// ─── Ajusta turmas.ocupadas (+1 ao matricular, -1 ao cancelar) ────────────────
+async function adjustOcupadas(turmaId, delta) {
+  if (!turmaId) return;
+  try {
+    // Lê o valor atual para calcular o novo
+    const { data, error: errRead } = await supabase
+      .from('turmas')
+      .select('ocupadas')
+      .eq('id', turmaId)
+      .eq('tenant_id', getTenantId())
+      .single();
+    if (errRead) throw errRead;
+
+    const novoVal = Math.max(0, (data.ocupadas || 0) + delta);
+    const { error: errUpd } = await supabase
+      .from('turmas')
+      .update({ ocupadas: novoVal })
+      .eq('id', turmaId)
+      .eq('tenant_id', getTenantId());
+    if (errUpd) throw errUpd;
+  } catch (err) {
+    console.warn('[adjustOcupadas] Falha ao atualizar vagas:', err.message);
+    // Não bloqueia o fluxo principal — log e segue
   }
 }
 
@@ -342,13 +390,23 @@ function modalEditar(m) {
 
   document.getElementById('modal-cancel')?.addEventListener('click', () => closeModal());
   document.getElementById('modal-update')?.addEventListener('click', async () => {
-    const st  = document.getElementById('e-status')?.value;
-    const btn = document.getElementById('modal-update');
-    btn.disabled = true;
+    const st      = document.getElementById('e-status')?.value;
+    const oldSt   = m.status;
+    const btn     = document.getElementById('modal-update');
+    btn.disabled  = true;
     try {
       const { error } = await supabase
         .from('matriculas').update({ status: st }).eq('id', m.id).eq('tenant_id', getTenantId());
       if (error) throw error;
+
+      // [FIX CRÍTICO] Ajusta ocupadas quando cancela ou reativa matrícula
+      if (m.turma_id) {
+        const foiCancelado   = st === 'cancelado' && oldSt !== 'cancelado';
+        const foiReativado   = st !== 'cancelado' && oldSt === 'cancelado';
+        if (foiCancelado) await adjustOcupadas(m.turma_id, -1);
+        if (foiReativado)  await adjustOcupadas(m.turma_id, +1);
+      }
+
       closeModal();
       toast('Status atualizado!', 'success');
       await loadMatriculas();

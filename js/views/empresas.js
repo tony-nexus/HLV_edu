@@ -4,7 +4,7 @@
  */
 
 import { supabase, getTenantId } from '../core/supabase.js';
-import { setContent, openModal, closeModal, toast } from '../ui/components.js';
+import { setContent, openModal, closeModal, toast, esc } from '../ui/components.js';
 
 let _empresas = [];
 
@@ -99,9 +99,9 @@ function applyFilter() {
 
   tbody.innerHTML = f.map(e => `
     <tr>
-      <td style="font-weight:500">${e.nome}</td>
-      <td style="font-family:var(--font-mono);font-size:12px">${e.cnpj || '—'}</td>
-      <td style="font-size:12.5px;color:var(--text-secondary)">${e.responsavel || '—'}</td>
+      <td style="font-weight:500">${esc(e.nome)}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${esc(e.cnpj || '—')}</td>
+      <td style="font-size:12.5px;color:var(--text-secondary)">${esc(e.responsavel || '—')}</td>
       <td><span class="badge ${e.status==='ativo'?'badge-green':'badge-gray'}">${e.status==='ativo'?'Ativo':'Inativo'}</span></td>
       <td>
         <div style="display:flex;gap:4px">

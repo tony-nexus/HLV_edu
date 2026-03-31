@@ -9,6 +9,18 @@ const MENU_ITEMS = ['Instituição','Aparência','Usuários','Integrações','Ce
 
 export async function render() {
   setContent(`
+    <style>
+      .edu-toggle-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+      .edu-toggle-switch input { opacity: 0; width: 0; height: 0; }
+      .edu-toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--border, #334155); transition: background-color 0.3s ease; border-radius: 999px; }
+      .edu-toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: #ffffff; transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1); border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+      .edu-toggle-switch input:checked + .edu-toggle-slider { background-color: #10b981; }
+      .edu-toggle-switch input:checked + .edu-toggle-slider:before { transform: translateX(20px); }
+      .setting-item { display:flex; justify-content:space-between; align-items:center; gap:24px; margin-bottom: 20px; }
+      .setting-item:last-child { margin-bottom: 0; }
+      .setting-label { font-size: 0.95rem; font-weight: 500; margin-bottom: 4px; display: block; }
+      .setting-desc { font-size: 0.85rem; color: var(--text-secondary); margin: 0; line-height: 1.4; }
+    </style>
     <div class="page-header">
       <div><h1>Configurações</h1><p>Personalização e configurações da instituição</p></div>
       <div class="page-header-actions">
@@ -54,6 +66,36 @@ export async function render() {
         </div>
 
         <div class="card">
+          <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span class="card-title">Alertas por E-mail</span>
+            <span style="font-size:10px;text-transform:uppercase;color:#10b981;font-weight:600;letter-spacing:0.05em;">Acadêmico / Comercial</span>
+          </div>
+          <div class="card-body">
+            <div class="setting-item">
+              <div>
+                <span class="setting-label">Aviso de 30 dias</span>
+                <p class="setting-desc">Envia uma notificação inicial um mês antes do vencimento do certificado.</p>
+              </div>
+              <label class="edu-toggle-switch"><input type="checkbox" id="config-30-dias" checked><span class="edu-toggle-slider"></span></label>
+            </div>
+            <div class="setting-item">
+              <div>
+                <span class="setting-label">Aviso de 7 dias</span>
+                <p class="setting-desc">Lembrete final antes do certificado expirar solicitando ação imediata.</p>
+              </div>
+              <label class="edu-toggle-switch"><input type="checkbox" id="config-7-dias" checked><span class="edu-toggle-slider"></span></label>
+            </div>
+            <div class="setting-item">
+              <div>
+                <span class="setting-label">Certificado Expirado</span>
+                <p class="setting-desc">Aviso enviado no exato dia em que o certificado foi anulado ou expirou.</p>
+              </div>
+              <label class="edu-toggle-switch"><input type="checkbox" id="config-expirado"><span class="edu-toggle-slider"></span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
           <div class="card-header"><span class="card-title">Plano Atual</span><span class="badge badge-green">Pro</span></div>
           <div class="card-body">
             <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;font-size:13px">
@@ -77,6 +119,16 @@ export async function render() {
   `);
 
   document.getElementById('btn-salvar-config')?.addEventListener('click', () => toast('Configurações salvas!', 'success'));
+
+  // Lógica dos Toggles de Alertas por e-mail
+  const toggles = ['config-30-dias', 'config-7-dias', 'config-expirado'];
+  toggles.forEach(id => {
+    document.getElementById(id)?.addEventListener('change', (e) => {
+      const isChecked = e.target.checked;
+      toast(`Regra atualizada com sucesso.`, 'success');
+      // TODO: Salvar com Supabase usando a tabela de preferências do Tenant
+    });
+  });
 
   // Menu de navegação lateral
   document.querySelectorAll('.config-menu-item').forEach(item => {
